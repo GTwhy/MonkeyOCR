@@ -1,0 +1,33 @@
+FROM --platform=linux/amd64 bianbong/monkeyocr
+
+# Switch to root to install additional files
+USER root
+
+# Disable HF symlink warning (makes layer more reproducible)
+ENV HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+# Optional build-time args
+ARG MODEL_NAME="MonkeyOCR-pro-1.2B"
+ARG DOWNLOAD_TYPE="huggingface"  # huggingface | modelscope
+
+# Ensure weight directory exists (already in base image, but just in case)
+RUN mkdir -p /app/MonkeyOCR/model_weight
+
+WORKDIR /app/MonkeyOCR
+
+# -----------------------------------------------------------------------------
+# Download all required model weights at build-time so that the runtime container
+# starts with a fully-populated model_weight directory (no cold download/I/O).
+# -----------------------------------------------------------------------------
+RUN python tools/download_model.py -t ${DOWNLOAD_TYPE} -n ${MODEL_NAME}
+
+# Adjust permissions back to the non-root user defined in the base image
+RUN chown -R appuser:appuser /app/MonkeyOCR/model_weight
+
+# Clean up HF cache to keep image size small (weights already copied) – optional
+RUN rm -rf /root/.cache/huggingface
+
+# Restore original user
+USER appuser
+
+# Inherit entrypoint/cmd from base image (already points to MonkeyOCR launcher)

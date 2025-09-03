@@ -11,9 +11,11 @@ from pathlib import Path
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+import argparse
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from tempfile import gettempdir
 import zipfile
@@ -41,8 +43,7 @@ class ParseResponse(BaseModel):
 monkey_ocr_model = None
 supports_async = False
 model_lock = asyncio.Lock()
-max_workers = int(os.getenv("MAX_WORKERS", 4))
-executor = ThreadPoolExecutor(max_workers=max_workers)
+executor = ThreadPoolExecutor(max_workers=4)
 
 def initialize_model():
     """Initialize MonkeyOCR model"""
@@ -224,6 +225,16 @@ async def parse_document(file: UploadFile = File(...)):
 async def parse_document_split(file: UploadFile = File(...)):
     """Parse complete document and split result by pages (PDF or image)"""
     return await parse_document_internal(file, split_pages=True)
+
+@app.post("/parse/download")
+async def parse_document_download(file: UploadFile = File(...)):
+    """Parse complete document and directly return ZIP file"""
+    return await parse_document_download_internal(file, split_pages=False)
+
+@app.post("/parse/split/download")
+async def parse_document_split_download(file: UploadFile = File(...)):
+    """Parse complete document with page splitting and directly return ZIP file"""
+    return await parse_document_download_internal(file, split_pages=True)
 
 async def async_parse_file(input_file_path: str, output_dir: str, split_pages: bool = False):
     """
@@ -727,5 +738,97 @@ async def perform_ocr_task(file: UploadFile, task_type: str) -> TaskResponse:
             message=f"OCR task failed: {str(e)}"
         )
 
+async def parse_document_download_internal(file: UploadFile, split_pages: bool = False):
+    """Internal function to parse document and directly return ZIP file"""
+    try:
+        if not monkey_ocr_model:
+            raise HTTPException(status_code=500, detail="Model not initialized")
+        
+        # Validate file type - support both PDF and image files
+        allowed_extensions = {'.pdf', '.jpg', '.jpeg', '.png'}
+        file_ext_with_dot = os.path.splitext(file.filename)[1].lower() if file.filename else ''
+        
+        if file_ext_with_dot not in allowed_extensions:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unsupported file type: {file_ext_with_dot}. Allowed: {', '.join(allowed_extensions)}"
+            )
+        
+        # Get original filename without extension
+        original_name = '.'.join(file.filename.split('.')[:-1])
+        
+        # Save uploaded file temporarily with unique name to avoid conflicts
+        import uuid
+        unique_suffix = str(uuid.uuid4())[:8]
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext_with_dot, prefix=f"upload_{unique_suffix}_") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Create output directory with unique name
+            output_dir = tempfile.mkdtemp(prefix=f"monkeyocr_parse_{unique_suffix}_")
+            
+            # Use optimized async parse function
+            result_dir = await async_parse_file(temp_file_path, output_dir, split_pages)
+            
+            # Create ZIP file
+            suffix = "_split" if split_pages else "_parsed"
+            timestamp = int(time.time() * 1000)  # Use milliseconds for better uniqueness
+            zip_filename = f"{original_name}{suffix}_{timestamp}_{unique_suffix}.zip"
+            zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
+            
+            # Create ZIP file asynchronously
+            await create_zip_file_async(result_dir, zip_path, original_name, split_pages)
+            
+            # Return the ZIP file directly
+            media_type = "application/zip"
+            headers = {
+                "Content-Disposition": f'attachment; filename="{zip_filename}"'
+            }
+            
+            return FileResponse(
+                path=zip_path,
+                media_type=media_type,
+                headers=headers,
+                filename=zip_filename
+            )
+            
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_file_path)
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup temp file {temp_file_path}: {cleanup_error}")
+            
+    except Exception as e:
+        logger.error(f"Parsing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Parsing failed: {str(e)}")
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description="MonkeyOCR FastAPI服务器")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="监听主机地址 (默认: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=7861, help="监听端口 (默认: 7861)")
+    parser.add_argument("--config", type=str, default="model_configs.yaml", help="模型配置文件路径 (默认: model_configs.yaml)")
+    parser.add_argument("--workers", type=int, default=1, help="工作进程数 (默认: 1)")
+    return parser.parse_args()
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=7861)
+    args = parse_args()
+    
+    # 设置配置文件环境变量
+    if args.config:
+        os.environ["MONKEYOCR_CONFIG"] = args.config
+        logger.info(f"使用配置文件: {args.config}")
+    
+    logger.info(f"启动FastAPI服务器...")
+    logger.info(f"监听地址: {args.host}:{args.port}")
+    
+    uvicorn.run(
+        app, 
+        host=args.host, 
+        port=args.port,
+        workers=args.workers if args.workers > 1 else None
+    )

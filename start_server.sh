@@ -2,15 +2,25 @@
 
 # MonkeyOCR 服务启动脚本
 
-# 检查Python环境
-if ! command -v python &> /dev/null; then
-    echo "❌ Python未安装或不在PATH中"
-    exit 1
+# 激活 conda 环境
+echo "🐍 激活 conda 环境: MonkeyOCR"
+if command -v conda &> /dev/null; then
+    # 初始化 conda（如果需要）
+    eval "$(conda shell.bash hook)"
+    
+    # 检查环境是否存在
+    if conda env list | grep -q "MonkeyOCR"; then
+        conda activate MonkeyOCR
+        echo "✅ 成功激活 MonkeyOCR 环境"
+    else
+        echo "⚠️  警告: MonkeyOCR conda 环境不存在"
+        echo "请先创建环境: conda create -n MonkeyOCR python=3.8"
+        echo "或使用当前Python环境继续..."
+    fi
+else
+    echo "⚠️  警告: conda 未安装，使用当前Python环境"
 fi
 
-# 检查依赖
-echo "🔍 检查依赖..."
-pip install -q -r requirements_server.txt
 
 # 默认配置
 HOST=${HOST:-"0.0.0.0"}
@@ -49,10 +59,47 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
+# 从配置文件中读取 models_dir
+echo "📖 读取配置文件中的模型目录..."
+if command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+elif command -v python &> /dev/null; then
+    PYTHON_CMD="python"
+else
+    echo "❌ 未找到 Python 解释器"
+    exit 1
+fi
+
+# 使用Python读取YAML配置文件中的models_dir
+MODELS_DIR=$($PYTHON_CMD -c "
+import yaml
+import sys
+try:
+    with open('$CONFIG', 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    models_dir = config.get('models_dir', 'model_weight')
+    print(models_dir)
+except Exception as e:
+    print('model_weight', file=sys.stderr)
+    sys.exit(0)
+" 2>/dev/null)
+
+# 如果读取失败，使用默认值
+if [ -z "$MODELS_DIR" ]; then
+    MODELS_DIR="model_weight"
+    echo "⚠️  无法读取配置文件中的models_dir，使用默认值: $MODELS_DIR"
+else
+    echo "📂 配置的模型目录: $MODELS_DIR"
+fi
+
 # 检查模型权重目录
-if [ ! -d "model_weight" ]; then
-    echo "⚠️  警告: model_weight目录不存在"
-    echo "请确保模型权重已下载到model_weight目录"
+if [ ! -d "$MODELS_DIR" ]; then
+    echo "❌ 错误: 模型目录不存在: $MODELS_DIR"
+    echo "请确保模型权重已下载到 $MODELS_DIR 目录"
+    echo "或检查配置文件 $CONFIG 中的 models_dir 设置是否正确"
+    exit 1
+else
+    echo "✅ 模型目录检查通过: $MODELS_DIR"
 fi
 
 # 启动服务

@@ -14,10 +14,10 @@ pip install -q -r requirements_server.txt
 
 # 默认配置
 HOST=${HOST:-"0.0.0.0"}
-PORT=${PORT:-8521}
-CONFIG=${CONFIG:-"batch_model_configs.yaml"}
+PORT=${PORT:-7861}
+CONFIG=${CONFIG:-"pro_3b_model_configs.yaml"}
 WORKERS=${WORKERS:-1}
-SERVER_TYPE=${SERVER_TYPE:-"parse_server"}  # 新增：服务器类型选择
+SERVER_TYPE=${SERVER_TYPE:-"api"}  # 新增：服务器类型选择
 
 # 智能选择GPU设备
 if [ -z "$CUDA_DEVICE" ]; then

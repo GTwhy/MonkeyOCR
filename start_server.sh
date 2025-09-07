@@ -25,7 +25,7 @@ fi
 # 默认配置
 HOST=${HOST:-"0.0.0.0"}
 PORT=${PORT:-7861}
-CONFIG=${CONFIG:-"pro_3b_model_configs.yaml"}
+CONFIG=${CONFIG:-"yolo_model_configs.yaml"}
 WORKERS=${WORKERS:-1}
 SERVER_TYPE=${SERVER_TYPE:-"api"}  # 新增：服务器类型选择
 

@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import argparse
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -217,26 +217,38 @@ async def extract_table(file: UploadFile = File(...)):
     return await perform_ocr_task(file, "table")
 
 @app.post("/parse", response_model=ParseResponse)
-async def parse_document(file: UploadFile = File(...)):
+async def parse_document(
+    file: UploadFile = File(...), 
+    convert_table: bool = Form(True)
+):
     """Parse complete document (PDF or image)"""
-    return await parse_document_internal(file, split_pages=False)
+    return await parse_document_internal(file, split_pages=False, convert_table=convert_table)
 
 @app.post("/parse/split", response_model=ParseResponse)
-async def parse_document_split(file: UploadFile = File(...)):
+async def parse_document_split(
+    file: UploadFile = File(...),
+    convert_table: bool = Form(True)
+):
     """Parse complete document and split result by pages (PDF or image)"""
-    return await parse_document_internal(file, split_pages=True)
+    return await parse_document_internal(file, split_pages=True, convert_table=convert_table)
 
 @app.post("/parse/download")
-async def parse_document_download(file: UploadFile = File(...)):
+async def parse_document_download(
+    file: UploadFile = File(...), 
+    convert_table: bool = Form(True)
+):
     """Parse complete document and directly return ZIP file"""
-    return await parse_document_download_internal(file, split_pages=False)
+    return await parse_document_download_internal(file, split_pages=False, convert_table=convert_table)
 
 @app.post("/parse/split/download")
-async def parse_document_split_download(file: UploadFile = File(...)):
+async def parse_document_split_download(
+    file: UploadFile = File(...),
+    convert_table: bool = Form(True)
+):
     """Parse complete document with page splitting and directly return ZIP file"""
-    return await parse_document_download_internal(file, split_pages=True)
+    return await parse_document_download_internal(file, split_pages=True, convert_table=convert_table)
 
-async def async_parse_file(input_file_path: str, output_dir: str, split_pages: bool = False):
+async def async_parse_file(input_file_path: str, output_dir: str, split_pages: bool = False, convert_table: bool = True):
     """
     Optimized async version of parse_file that breaks down processing into async chunks
     """
@@ -315,13 +327,13 @@ async def async_parse_file(input_file_path: str, output_dir: str, split_pages: b
     # Process results asynchronously
     await process_inference_results_async(
         infer_result, output_dir, safe_name, 
-        local_image_dir, local_md_dir, image_dir, split_pages
+        local_image_dir, local_md_dir, image_dir, split_pages, convert_table
     )
     
     return local_md_dir
 
 async def process_inference_results_async(infer_result, output_dir, name_without_suff, 
-                                        local_image_dir, local_md_dir, image_dir, split_pages):
+                                        local_image_dir, local_md_dir, image_dir, split_pages, convert_table=True):
     """
     Process inference results asynchronously
     """
@@ -340,7 +352,7 @@ async def process_inference_results_async(infer_result, output_dir, name_without
         tasks = []
         for page_idx, page_infer_result in enumerate(infer_result):
             task = process_single_page_async(
-                page_infer_result, page_idx, output_dir, name_without_suff
+                page_infer_result, page_idx, output_dir, name_without_suff, convert_table
             )
             tasks.append(task)
         
@@ -352,10 +364,10 @@ async def process_inference_results_async(infer_result, output_dir, name_without
         # Process single result
         logger.info("Processing as single result...")
         await process_single_result_async(
-            infer_result, name_without_suff, local_image_dir, local_md_dir, image_dir
+            infer_result, name_without_suff, local_image_dir, local_md_dir, image_dir, convert_table
         )
 
-async def process_single_page_async(page_infer_result, page_idx, output_dir, name_without_suff):
+async def process_single_page_async(page_infer_result, page_idx, output_dir, name_without_suff, convert_table=True):
     """
     Process a single page result asynchronously
     """
@@ -396,14 +408,14 @@ async def process_single_page_async(page_infer_result, page_idx, output_dir, nam
         page_infer_result.draw_model(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_model.pdf"))
         page_pipe_result.draw_layout(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_layout.pdf"))
         page_pipe_result.draw_span(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_spans.pdf"))
-        page_pipe_result.dump_md(page_md_writer, f"{name_without_suff}_page_{page_idx}.md", page_image_dir)
+        page_pipe_result.dump_md(page_md_writer, f"{name_without_suff}_page_{page_idx}.md", page_image_dir, convert_table=convert_table)
         page_pipe_result.dump_content_list(page_md_writer, f"{name_without_suff}_page_{page_idx}_content_list.json", page_image_dir)
         page_pipe_result.dump_middle_json(page_md_writer, f'{name_without_suff}_page_{page_idx}_middle.json')
     
     # Run page processing in thread pool
     await asyncio.get_event_loop().run_in_executor(None, process_page_sync)
 
-async def process_single_result_async(infer_result, name_without_suff, local_image_dir, local_md_dir, image_dir):
+async def process_single_result_async(infer_result, name_without_suff, local_image_dir, local_md_dir, image_dir, convert_table=True):
     """
     Process single result asynchronously
     """
@@ -420,7 +432,7 @@ async def process_single_result_async(infer_result, name_without_suff, local_ima
         infer_result.draw_model(os.path.join(local_md_dir, f"{name_without_suff}_model.pdf"))
         pipe_result.draw_layout(os.path.join(local_md_dir, f"{name_without_suff}_layout.pdf"))
         pipe_result.draw_span(os.path.join(local_md_dir, f"{name_without_suff}_spans.pdf"))
-        pipe_result.dump_md(md_writer, f"{name_without_suff}.md", image_dir)
+        pipe_result.dump_md(md_writer, f"{name_without_suff}.md", image_dir, convert_table=convert_table)
         pipe_result.dump_content_list(md_writer, f"{name_without_suff}_content_list.json", image_dir)
         pipe_result.dump_middle_json(md_writer, f'{name_without_suff}_middle.json')
     
@@ -539,7 +551,7 @@ async def async_single_task_recognition(input_file_path: str, output_dir: str, t
     
     return local_md_dir
 
-async def parse_document_internal(file: UploadFile, split_pages: bool = False):
+async def parse_document_internal(file: UploadFile, split_pages: bool = False, convert_table: bool = True):
     """Internal function to parse document with optional page splitting"""
     try:
         if not monkey_ocr_model:
@@ -572,7 +584,7 @@ async def parse_document_internal(file: UploadFile, split_pages: bool = False):
             output_dir = tempfile.mkdtemp(prefix=f"monkeyocr_parse_{unique_suffix}_")
             
             # Use optimized async parse function
-            result_dir = await async_parse_file(temp_file_path, output_dir, split_pages)
+            result_dir = await async_parse_file(temp_file_path, output_dir, split_pages, convert_table)
             
             # List generated files
             files = []
@@ -738,7 +750,7 @@ async def perform_ocr_task(file: UploadFile, task_type: str) -> TaskResponse:
             message=f"OCR task failed: {str(e)}"
         )
 
-async def parse_document_download_internal(file: UploadFile, split_pages: bool = False):
+async def parse_document_download_internal(file: UploadFile, split_pages: bool = False, convert_table: bool = True):
     """Internal function to parse document and directly return ZIP file"""
     try:
         if not monkey_ocr_model:
@@ -771,7 +783,7 @@ async def parse_document_download_internal(file: UploadFile, split_pages: bool =
             output_dir = tempfile.mkdtemp(prefix=f"monkeyocr_parse_{unique_suffix}_")
             
             # Use optimized async parse function
-            result_dir = await async_parse_file(temp_file_path, output_dir, split_pages)
+            result_dir = await async_parse_file(temp_file_path, output_dir, split_pages, convert_table)
             
             # Create ZIP file
             suffix = "_split" if split_pages else "_parsed"

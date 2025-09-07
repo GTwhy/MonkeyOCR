@@ -39,7 +39,7 @@ def ocr_mk_mm_markdown_with_para_and_pagination(pdf_info_dict: list,
             page_no += 1
             continue
         page_markdown = ocr_mk_markdown_with_para_core_v2(
-            paras_of_layout, 'mm', img_buket_path)
+            paras_of_layout, 'mm', img_buket_path, convert_table=True)
         markdown_with_para_and_pagination.append({
             'page_no':
                 page_no,
@@ -53,6 +53,7 @@ def ocr_mk_mm_markdown_with_para_and_pagination(pdf_info_dict: list,
 def ocr_mk_markdown_with_para_core_v2(paras_of_layout,
                                       mode,
                                       img_buket_path='',
+                                      convert_table=True,
                                       ):
     page_markdown = []
     for para_block in paras_of_layout:
@@ -94,10 +95,13 @@ def ocr_mk_markdown_with_para_core_v2(paras_of_layout,
                         for line in block['lines']:
                             for span in line['spans']:
                                 if span['type'] == ContentType.Table:
-                                    # if processed by table model
-                                    if span.get('latex', ''):
+                                    # if convert_table is False, always use original image
+                                    if not convert_table and span.get('image_path', ''):
+                                        para_text += f"\n![]({join_path(img_buket_path, span['image_path'])})  \n"
+                                    # if processed by table model and convert_table is True
+                                    elif convert_table and span.get('latex', ''):
                                         para_text += f"\n\n$\n {span['latex']}\n$\n\n"
-                                    elif span.get('html', ''):
+                                    elif convert_table and span.get('html', ''):
                                         para_text += f"\n\n{span['html']}\n\n"
                                     elif span.get('image_path', ''):
                                         para_text += f"\n![]({join_path(img_buket_path, span['image_path'])})  \n"
@@ -245,6 +249,7 @@ def union_make(pdf_info_dict: list,
                make_mode: str,
                drop_mode: str,
                img_buket_path: str = '',
+               convert_table: bool = True,
                ):
     output_content = []
     for page_info in pdf_info_dict:
@@ -272,7 +277,7 @@ def union_make(pdf_info_dict: list,
             continue
         if make_mode == MakeMode.MM_MD:
             page_markdown = ocr_mk_markdown_with_para_core_v2(
-                paras_of_layout, 'mm', img_buket_path)
+                paras_of_layout, 'mm', img_buket_path, convert_table=convert_table)
             output_content.extend(page_markdown)
         elif make_mode == MakeMode.NLP_MD:
             page_markdown = ocr_mk_markdown_with_para_core_v2(

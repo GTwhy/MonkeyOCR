@@ -29,7 +29,7 @@ class PaddleXLayoutModelWrapper:
             "number": CategoryId.Abandon,
             "abstract": CategoryId.Text,
             "content": CategoryId.Text,
-            "figure_title": CategoryId.Text,
+            "figure_title": CategoryId.ImageCaption,
             "formula": CategoryId.InterlineEquation_Layout,
             "table": CategoryId.TableBody,
             "reference": CategoryId.Text,

@@ -28,6 +28,7 @@ class PipeResultLLM:
         img_dir_or_bucket_prefix: str,
         drop_mode=DropMode.NONE,
         md_make_mode=MakeMode.MM_MD,
+        convert_table: bool = True,
     ) -> str:
         """Get markdown content.
 
@@ -35,13 +36,14 @@ class PipeResultLLM:
             img_dir_or_bucket_prefix (str): The s3 bucket prefix or local file directory which used to store the figure
             drop_mode (str, optional): Drop strategy when some page which is corrupted or inappropriate. Defaults to DropMode.NONE.
             md_make_mode (str, optional): The content Type of Markdown be made. Defaults to MakeMode.MM_MD.
+            convert_table (bool, optional): Whether to convert tables to HTML/LaTeX format. Defaults to True.
 
         Returns:
             str: return markdown content
         """
         pdf_info_list = self._pipe_res['pdf_info']
         md_content = union_make(
-            pdf_info_list, md_make_mode, drop_mode, img_dir_or_bucket_prefix
+            pdf_info_list, md_make_mode, drop_mode, img_dir_or_bucket_prefix, convert_table=convert_table
         )
         return md_content.replace('\\$', '$').replace('\\*', '*').replace('<seg>', r'\<seg\>').replace('<sos>', r'\<sos\>').replace('<eos>', r'\<eos\>').replace('<pad>', r'\<pad\>').replace('<unk>', r'\<unk\>').replace('<sep>', r'\<sep\>').replace('<cls>', r'\<cls\>')
 
@@ -52,6 +54,7 @@ class PipeResultLLM:
         img_dir_or_bucket_prefix: str,
         drop_mode=DropMode.NONE,
         md_make_mode=MakeMode.MM_MD,
+        convert_table: bool = True,
     ):
         """Dump The Markdown.
 
@@ -61,10 +64,11 @@ class PipeResultLLM:
             img_dir_or_bucket_prefix (str): The s3 bucket prefix or local file directory which used to store the figure
             drop_mode (str, optional): Drop strategy when some page which is corrupted or inappropriate. Defaults to DropMode.NONE.
             md_make_mode (str, optional): The content Type of Markdown be made. Defaults to MakeMode.MM_MD.
+            convert_table (bool, optional): Whether to convert tables to HTML/LaTeX format. Defaults to True.
         """
 
         md_content = self.get_markdown(
-            img_dir_or_bucket_prefix, drop_mode=drop_mode, md_make_mode=md_make_mode
+            img_dir_or_bucket_prefix, drop_mode=drop_mode, md_make_mode=md_make_mode, convert_table=convert_table
         )
         writer.write_string(file_path, md_content)
 

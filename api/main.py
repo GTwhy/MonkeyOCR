@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import argparse
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -21,6 +21,7 @@ from tempfile import gettempdir
 import zipfile
 from loguru import logger
 import time
+import shutil
 
 from magic_pdf.model.custom_model import MonkeyOCR
 import uvicorn
@@ -235,18 +236,20 @@ async def parse_document_split(
 @app.post("/parse/download")
 async def parse_document_download(
     file: UploadFile = File(...), 
-    convert_table: bool = Form(True)
+    convert_table: bool = Form(True),
+    background_tasks: BackgroundTasks = None
 ):
     """Parse complete document and directly return ZIP file"""
-    return await parse_document_download_internal(file, split_pages=False, convert_table=convert_table)
+    return await parse_document_download_internal(file, split_pages=False, convert_table=convert_table, background_tasks=background_tasks)
 
 @app.post("/parse/split/download")
 async def parse_document_split_download(
     file: UploadFile = File(...),
-    convert_table: bool = Form(True)
+    convert_table: bool = Form(True),
+    background_tasks: BackgroundTasks = None
 ):
     """Parse complete document with page splitting and directly return ZIP file"""
-    return await parse_document_download_internal(file, split_pages=True, convert_table=convert_table)
+    return await parse_document_download_internal(file, split_pages=True, convert_table=convert_table, background_tasks=background_tasks)
 
 async def async_parse_file(input_file_path: str, output_dir: str, split_pages: bool = False, convert_table: bool = True):
     """
@@ -609,13 +612,20 @@ async def parse_document_internal(file: UploadFile, split_pages: bool = False, c
             file_type = "PDF" if file_ext_with_dot == '.pdf' else "image"
             parse_type = "with page splitting" if split_pages else "standard"
             
-            return ParseResponse(
+            response = ParseResponse(
                 success=True,
                 message=f"{file_type} parsing ({parse_type}) completed successfully",
                 output_dir=result_dir,
                 files=files,
                 download_url=download_url
             )
+            # 清理输出目录（ZIP已写到 temp_dir）
+            try:
+                if os.path.exists(output_dir):
+                    shutil.rmtree(output_dir, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup output dir {output_dir}: {e}")
+            return response
             
         finally:
             # Clean up temporary file
@@ -727,12 +737,19 @@ async def perform_ocr_task(file: UploadFile, task_type: str) -> TaskResponse:
             
             content = await asyncio.get_event_loop().run_in_executor(None, read_result_sync)
             
-            return TaskResponse(
+            response = TaskResponse(
                 success=True,
                 task_type=task_type,
                 content=content,
                 message=f"{task_type.capitalize()} extraction completed successfully"
             )
+            # 清理输出目录
+            try:
+                if os.path.exists(output_dir):
+                    shutil.rmtree(output_dir, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup output dir {output_dir}: {e}")
+            return response
             
         finally:
             # Clean up temporary file
@@ -743,6 +760,12 @@ async def perform_ocr_task(file: UploadFile, task_type: str) -> TaskResponse:
             
     except Exception as e:
         logger.error(f"OCR task failed: {str(e)}")
+        try:
+            # 如果在异常前已创建 output_dir，则尝试清理
+            if 'output_dir' in locals() and os.path.exists(output_dir):
+                shutil.rmtree(output_dir, ignore_errors=True)
+        except Exception as ce:
+            logger.warning(f"Failed to cleanup output dir after error {locals().get('output_dir', '')}: {ce}")
         return TaskResponse(
             success=False,
             task_type=task_type,
@@ -750,7 +773,7 @@ async def perform_ocr_task(file: UploadFile, task_type: str) -> TaskResponse:
             message=f"OCR task failed: {str(e)}"
         )
 
-async def parse_document_download_internal(file: UploadFile, split_pages: bool = False, convert_table: bool = True):
+async def parse_document_download_internal(file: UploadFile, split_pages: bool = False, convert_table: bool = True, background_tasks: BackgroundTasks = None):
     """Internal function to parse document and directly return ZIP file"""
     try:
         if not monkey_ocr_model:
@@ -800,6 +823,22 @@ async def parse_document_download_internal(file: UploadFile, split_pages: bool =
                 "Content-Disposition": f'attachment; filename="{zip_filename}"'
             }
             
+            # 使用后台任务清理ZIP与输出目录
+            def _cleanup_after_response():
+                try:
+                    if os.path.exists(zip_path):
+                        os.remove(zip_path)
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup zip {zip_path}: {e}")
+                try:
+                    if os.path.exists(output_dir):
+                        shutil.rmtree(output_dir, ignore_errors=True)
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup output dir {output_dir}: {e}")
+
+            if background_tasks is not None:
+                background_tasks.add_task(_cleanup_after_response)
+
             return FileResponse(
                 path=zip_path,
                 media_type=media_type,

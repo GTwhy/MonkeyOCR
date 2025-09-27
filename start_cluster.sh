@@ -7,9 +7,9 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-NUM_WORKERS="${NUM_WORKERS:-${1:-2}}"
+NUM_WORKERS="${NUM_WORKERS:-${1:-4}}"
 WORKER_BASE_PORT="${WORKER_BASE_PORT:-${2:-7880}}"
-MANAGER_PORT="${MANAGER_PORT:-${3:-10008}}"
+MANAGER_PORT="${MANAGER_PORT:-${3:-7861}}"
 CONFIG="${CONFIG:-${4:-yolo_model_configs.yaml}}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-${5:-1}}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-10}"

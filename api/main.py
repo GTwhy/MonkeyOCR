@@ -41,6 +41,28 @@ class ParseResponse(BaseModel):
     files: Optional[List[str]] = None
     download_url: Optional[str] = None
 
+def create_safe_filename(original_name: str, max_length: int = 150) -> str:
+    """
+    创建安全的文件名，处理过长的原始文件名。
+
+    Args:
+        original_name: 原始文件名（不含扩展名）
+        max_length: 最大长度限制
+
+    Returns:
+        安全的文件名
+    """
+    # 如果原始名称太长，使用哈希值缩短它
+    if len(original_name) > max_length:
+        # 使用SHA256哈希，取前16个字符作为短标识符
+        name_hash = hashlib.sha256(original_name.encode('utf-8')).hexdigest()[:16]
+        # 保留原始名称的后50个字符，加上哈希值
+        truncated_name = original_name[-50:] + "_" + name_hash
+        logger.warning(f"文件名过长，已截断: {original_name[:100]}... -> {truncated_name}")
+        return truncated_name
+    else:
+        return original_name
+
 def create_safe_zip_filename(original_name: str, suffix: str, timestamp: int, unique_suffix: str) -> str:
     """
     创建安全的ZIP文件名，处理过长的原始文件名。
@@ -57,19 +79,10 @@ def create_safe_zip_filename(original_name: str, suffix: str, timestamp: int, un
     # 文件系统通常限制文件名长度为255个字符
     # 我们预留一些空间给时间戳和后缀，所以限制原始名称为150个字符
     max_original_length = 150
-
-    # 如果原始名称太长，使用哈希值缩短它
-    if len(original_name) > max_original_length:
-        # 使用SHA256哈希，取前16个字符作为短标识符
-        name_hash = hashlib.sha256(original_name.encode('utf-8')).hexdigest()[:16]
-        # 保留原始名称的后50个字符，加上哈希值
-        truncated_name = original_name[-50:] + "_" + name_hash
-        logger.warning(f"文件名过长，已截断: {original_name[:100]}... -> {truncated_name}")
-    else:
-        truncated_name = original_name
+    safe_name = create_safe_filename(original_name, max_original_length)
 
     # 生成最终的ZIP文件名
-    zip_filename = f"{truncated_name}{suffix}_{timestamp}_{unique_suffix}.zip"
+    zip_filename = f"{safe_name}{suffix}_{timestamp}_{unique_suffix}.zip"
 
     # 最后的保险措施：如果文件名仍然太长，强制截断
     max_total_length = 200  # 保守的长度限制
@@ -299,14 +312,17 @@ async def async_parse_file(input_file_path: str, output_dir: str, split_pages: b
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
     import uuid
-    
+
     if not monkey_ocr_model:
         raise HTTPException(status_code=500, detail="Model not initialized")
-    
+
     # Get filename with unique identifier to avoid conflicts
-    name_without_suff = '.'.join(os.path.basename(input_file_path).split(".")[:-1])
+    original_name = '.'.join(os.path.basename(input_file_path).split(".")[:-1])
     unique_id = str(uuid.uuid4())[:8]  # Short unique identifier
-    safe_name = f"{name_without_suff}_{unique_id}"
+    # 使用安全的文件名，避免过长的文件名导致问题
+    safe_name_base = create_safe_filename(original_name, max_length=100)  # 稍微保守一点的长度限制
+    safe_name = f"{safe_name_base}_{unique_id}"
+    name_without_suff = safe_name_base  # 用于生成输出文件名的安全名称
     
     # Prepare output directory with unique name
     local_image_dir = os.path.join(output_dir, safe_name, "images")
@@ -520,11 +536,14 @@ async def async_single_task_recognition(input_file_path: str, output_dir: str, t
     import uuid
     
     logger.info(f"Starting async single task recognition: {task}")
-    
+
     # Get filename with unique identifier to avoid conflicts
-    name_without_suff = '.'.join(os.path.basename(input_file_path).split(".")[:-1])
+    original_name = '.'.join(os.path.basename(input_file_path).split(".")[:-1])
     unique_id = str(uuid.uuid4())[:8]  # Short unique identifier
-    safe_name = f"{name_without_suff}_{unique_id}"
+    # 使用安全的文件名，避免过长的文件名导致问题
+    safe_name_base = create_safe_filename(original_name, max_length=100)  # 稍微保守一点的长度限制
+    safe_name = f"{safe_name_base}_{unique_id}"
+    name_without_suff = safe_name_base  # 用于生成输出文件名的安全名称
     
     # Prepare output directory with unique name
     local_md_dir = os.path.join(output_dir, safe_name)
@@ -712,54 +731,57 @@ async def parse_document_internal(file: UploadFile, split_pages: bool = False, c
 async def create_zip_file_async(result_dir, zip_path, original_name, split_pages):
     """Create ZIP file asynchronously"""
     def create_zip_sync():
+        # 使用安全的文件名，避免ZIP内部文件名过长
+        safe_name = create_safe_filename(original_name, max_length=100)
+
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, filenames in os.walk(result_dir):
                 for filename in filenames:
                     file_path = os.path.join(root, filename)
                     rel_path = os.path.relpath(file_path, result_dir)
-                    
+
                     if split_pages:
                         # For split pages, maintain the page directory structure
-                        # but add original name prefix
+                        # but add safe name prefix
                         if rel_path.startswith('page_'):
-                            # Keep the page structure: page_0/filename -> page_0/original_name_filename
+                            # Keep the page structure: page_0/filename -> page_0/safe_name_filename
                             parts = rel_path.split('/', 1)
                             if len(parts) == 2:
                                 page_dir, filename_part = parts
                                 if filename_part.startswith('images/'):
-                                    # Handle images: page_0/images/img.jpg -> page_0/images/original_name_img.jpg
+                                    # Handle images: page_0/images/img.jpg -> page_0/images/safe_name_img.jpg
                                     img_name = filename_part.replace('images/', '')
                                     new_filename = f"{page_dir}/images/{img_name}"
                                 else:
                                     # Handle other files in page directories
-                                    new_filename = f"{page_dir}/{original_name}_{filename_part}"
+                                    new_filename = f"{page_dir}/{safe_name}_{filename_part}"
                             else:
-                                new_filename = f"{original_name}_{rel_path}"
+                                new_filename = f"{safe_name}_{rel_path}"
                         else:
-                            new_filename = f"{original_name}_{rel_path}"
+                            new_filename = f"{safe_name}_{rel_path}"
                     else:
                         # Handle different file types
                         if filename.endswith('.md'):
-                            new_filename = f"{original_name}.md"
+                            new_filename = f"{safe_name}.md"
                         elif filename.endswith('_content_list.json'):
-                            new_filename = f"{original_name}_content_list.json"
+                            new_filename = f"{safe_name}_content_list.json"
                         elif filename.endswith('_middle.json'):
-                            new_filename = f"{original_name}_middle.json"
+                            new_filename = f"{safe_name}_middle.json"
                         elif filename.endswith('_model.pdf'):
-                            new_filename = f"{original_name}_model.pdf"
+                            new_filename = f"{safe_name}_model.pdf"
                         elif filename.endswith('_layout.pdf'):
-                            new_filename = f"{original_name}_layout.pdf"
+                            new_filename = f"{safe_name}_layout.pdf"
                         elif filename.endswith('_spans.pdf'):
-                            new_filename = f"{original_name}_spans.pdf"
+                            new_filename = f"{safe_name}_spans.pdf"
                         else:
                             # For images and other files, keep relative path structure but rename
                             if 'images/' in rel_path:
-                                # Keep images in images subfolder with original name prefix
+                                # Keep images in images subfolder with safe name prefix
                                 image_name = os.path.basename(rel_path)
                                 new_filename = f"images/{image_name}"
                             else:
-                                new_filename = f"{original_name}_{filename}"
-                    
+                                new_filename = f"{safe_name}_{filename}"
+
                     zipf.write(file_path, new_filename)
     
     # Run ZIP creation in thread pool to avoid blocking

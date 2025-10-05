@@ -57,6 +57,8 @@ class WorkerProcess:
     start_ts: float = field(default_factory=lambda: time.time())
     # 连续健康检查失败次数，用于避免单次网络抖动导致的误重启
     consecutive_failures: int = 0
+    # 绑定的 GPU 索引；None 表示 CPU 或未指定
+    gpu_index: Optional[int] = None
 
 
 class ClusterManager:
@@ -93,9 +95,11 @@ class ClusterManager:
         self._shutdown: bool = False
 
         self._client: Optional[httpx.AsyncClient] = None
+        # GPU 分配顺序（按显存占用从低到高）
+        self._gpu_order: List[int] = []
 
     # -------------------------- Worker Lifecycle -------------------------- #
-    def _start_one_worker(self, worker_id: int, port: int) -> WorkerProcess:
+    def _start_one_worker(self, worker_id: int, port: int, gpu_index: Optional[int] = None) -> WorkerProcess:
         """启动一个 parse_server 实例，通过 start_server.sh 脚本。"""
         monkey_dir = os.path.dirname(os.path.abspath(__file__))
         log_dir = os.path.join(monkey_dir, "cluster_logs")
@@ -123,6 +127,9 @@ class ClusterManager:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        # 为子进程明确绑定 GPU，避免并发自选导致全部落在同一块 GPU
+        if gpu_index is not None:
+            env["CUDA_DEVICE"] = str(gpu_index)
         # 统一输出目录到仓库 backend/outputs，避免在不可写路径下创建
         repo_root = os.path.abspath(os.path.join(monkey_dir, os.pardir))
         backend_outputs = os.path.join(repo_root, "backend", "outputs")
@@ -135,7 +142,9 @@ class ClusterManager:
         stdout_fd = open(log_path, "ab", buffering=0)
         stderr_fd = stdout_fd  # 合并输出
 
-        logger.info(f"启动 Worker#{worker_id} -> port={port}")
+        logger.info(
+            f"启动 Worker#{worker_id} -> port={port}, gpu={'cpu' if gpu_index is None else gpu_index}"
+        )
         proc = subprocess.Popen(
             cmd,
             cwd=monkey_dir,
@@ -157,6 +166,7 @@ class ClusterManager:
             log_path=log_path,
             start_ts=time.time(),
             consecutive_failures=0,
+            gpu_index=gpu_index,
         )
         return worker
 
@@ -245,6 +255,40 @@ class ClusterManager:
             # 再等待释放
             self._wait_until_port_closed(self.worker_host, port, timeout_seconds=10.0)
 
+    def _detect_gpus_sorted_by_mem(self) -> List[int]:
+        """使用 nvidia-smi 获取按显存占用(升序)排序的 GPU 索引列表。
+        失败时返回空列表，表示不进行显式分配。
+        """
+        try:
+            out = subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            return []
+
+        pairs: List[Tuple[int, int]] = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # 兼容 "0, 123" 或 "0,123"
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                idx = int(parts[0])
+                used = int(parts[1])
+                pairs.append((idx, used))
+        if not pairs:
+            return []
+        # 先按显存占用升序，再按索引升序
+        pairs.sort(key=lambda x: (x[1], x[0]))
+        return [idx for idx, _ in pairs]
+
     def _log_contains_address_in_use(self, log_path: Optional[str]) -> bool:
         if not log_path or not os.path.isfile(log_path):
             return False
@@ -274,7 +318,8 @@ class ClusterManager:
             self._wait_until_port_closed(self.worker_host, port, timeout_seconds=15.0)
         except Exception:
             pass
-        new_worker = self._start_one_worker(wid, port)
+        # 重启时保持原 GPU 分配，避免在不同 GPU 间来回漂移
+        new_worker = self._start_one_worker(wid, port, gpu_index=worker.gpu_index)
         new_worker.restarted_times = worker.restarted_times + 1
         # 原位替换
         idx = self.workers.index(worker)
@@ -282,9 +327,15 @@ class ClusterManager:
 
     async def start_all_workers(self) -> None:
         self.workers = []
+        # 启动前侦测一次 GPU，并按显存占用升序排列
+        self._gpu_order = self._detect_gpus_sorted_by_mem()
         for i in range(self.num_workers):
             port = self.worker_base_port + i
-            worker = self._start_one_worker(i, port)
+            gpu_index: Optional[int] = None
+            if self._gpu_order:
+                # 若 Worker 数量超过 GPU 数量，则按顺序循环复用
+                gpu_index = self._gpu_order[i % len(self._gpu_order)]
+            worker = self._start_one_worker(i, port, gpu_index=gpu_index)
             self.workers.append(worker)
 
     async def stop_all_workers(self) -> None:
@@ -499,6 +550,7 @@ class ClusterManager:
                     "total_requests": w.total_requests,
                     "restarted_times": w.restarted_times,
                     "log_path": w.log_path,
+                    "gpu_index": w.gpu_index,
                 }
                 for w in self.workers
             ],
@@ -539,9 +591,10 @@ def build_app(manager: ClusterManager) -> FastAPI:
                 f"<tr>"
                 f"<td>{w['worker_id']}</td>"
                 f"<td>{w['port']}</td>"
+                f"<td>{w.get('gpu_index') if w.get('gpu_index') is not None else '-'}" + "</td>"
                 f"<td>{w['status']}</td>"
                 f"<td>{w['pid']}</td>"
-                f"<td>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(w['last_ok_ts'])) if w['last_ok_ts'] else '-'}</td>"
+                f"<td>{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(w['last_ok_ts'])) if w['last_ok_ts'] else '-'}" + "</td>"
                 f"<td>{w['current_requests']}</td>"
                 f"<td>{w['total_requests']}</td>"
                 f"<td>{w['restarted_times']}</td>"
@@ -554,6 +607,7 @@ def build_app(manager: ClusterManager) -> FastAPI:
             <tr>
               <th>WorkerID</th>
               <th>Port</th>
+              <th>GPU</th>
               <th>Status</th>
               <th>PID</th>
               <th>Last OK</th>

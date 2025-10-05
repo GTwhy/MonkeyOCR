@@ -406,14 +406,29 @@ async def process_single_page_async(page_infer_result, page_idx, output_dir, nam
         
         # Pipeline processing for this page
         page_pipe_result = page_infer_result.pipe_ocr_mode(page_image_writer, MonkeyOCR_model=monkey_ocr_model)
-        
-        # Save page-specific results
-        page_infer_result.draw_model(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_model.pdf"))
-        page_pipe_result.draw_layout(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_layout.pdf"))
-        page_pipe_result.draw_span(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_spans.pdf"))
-        page_pipe_result.dump_md(page_md_writer, f"{name_without_suff}_page_{page_idx}.md", page_image_dir, convert_table=convert_table)
-        page_pipe_result.dump_content_list(page_md_writer, f"{name_without_suff}_page_{page_idx}_content_list.json", page_image_dir)
-        page_pipe_result.dump_middle_json(page_md_writer, f'{name_without_suff}_page_{page_idx}_middle.json')
+
+        # Always try to save essential outputs first (MD / JSON)
+        try:
+            page_pipe_result.dump_md(page_md_writer, f"{name_without_suff}_page_{page_idx}.md", page_image_dir, convert_table=convert_table)
+            page_pipe_result.dump_content_list(page_md_writer, f"{name_without_suff}_page_{page_idx}_content_list.json", page_image_dir)
+            page_pipe_result.dump_middle_json(page_md_writer, f'{name_without_suff}_page_{page_idx}_middle.json')
+        except Exception as e:
+            logger.error(f"Failed to write page {page_idx} markdown/json: {e}")
+            raise
+
+        # Best-effort debug PDFs: do not fail the whole task
+        try:
+            page_infer_result.draw_model(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_model.pdf"))
+        except Exception as e:
+            logger.warning(f"Skip drawing model PDF for page {page_idx}: {e}")
+        try:
+            page_pipe_result.draw_layout(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_layout.pdf"))
+        except Exception as e:
+            logger.warning(f"Skip drawing layout PDF for page {page_idx}: {e}")
+        try:
+            page_pipe_result.draw_span(os.path.join(page_local_md_dir, f"{name_without_suff}_page_{page_idx}_spans.pdf"))
+        except Exception as e:
+            logger.warning(f"Skip drawing spans PDF for page {page_idx}: {e}")
     
     # Run page processing in thread pool
     await asyncio.get_event_loop().run_in_executor(None, process_page_sync)
@@ -430,14 +445,29 @@ async def process_single_result_async(infer_result, name_without_suff, local_ima
         
         # Pipeline processing for single result
         pipe_result = infer_result.pipe_ocr_mode(image_writer, MonkeyOCR_model=monkey_ocr_model)
-        
-        # Save single result
-        infer_result.draw_model(os.path.join(local_md_dir, f"{name_without_suff}_model.pdf"))
-        pipe_result.draw_layout(os.path.join(local_md_dir, f"{name_without_suff}_layout.pdf"))
-        pipe_result.draw_span(os.path.join(local_md_dir, f"{name_without_suff}_spans.pdf"))
-        pipe_result.dump_md(md_writer, f"{name_without_suff}.md", image_dir, convert_table=convert_table)
-        pipe_result.dump_content_list(md_writer, f"{name_without_suff}_content_list.json", image_dir)
-        pipe_result.dump_middle_json(md_writer, f'{name_without_suff}_middle.json')
+
+        # Save essential outputs first (MD / JSON). If this fails, abort.
+        try:
+            pipe_result.dump_md(md_writer, f"{name_without_suff}.md", image_dir, convert_table=convert_table)
+            pipe_result.dump_content_list(md_writer, f"{name_without_suff}_content_list.json", image_dir)
+            pipe_result.dump_middle_json(md_writer, f'{name_without_suff}_middle.json')
+        except Exception as e:
+            logger.error(f"Failed to write markdown/json: {e}")
+            raise
+
+        # Best-effort debug PDFs: generate if possible, but never fail the request
+        try:
+            infer_result.draw_model(os.path.join(local_md_dir, f"{name_without_suff}_model.pdf"))
+        except Exception as e:
+            logger.warning(f"Skip drawing model PDF: {e}")
+        try:
+            pipe_result.draw_layout(os.path.join(local_md_dir, f"{name_without_suff}_layout.pdf"))
+        except Exception as e:
+            logger.warning(f"Skip drawing layout PDF: {e}")
+        try:
+            pipe_result.draw_span(os.path.join(local_md_dir, f"{name_without_suff}_spans.pdf"))
+        except Exception as e:
+            logger.warning(f"Skip drawing spans PDF: {e}")
     
     # Run processing in thread pool
     await asyncio.get_event_loop().run_in_executor(None, process_single_sync)

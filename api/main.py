@@ -62,8 +62,8 @@ def create_safe_zip_filename(original_name: str, suffix: str, timestamp: int, un
     if len(original_name) > max_original_length:
         # 使用SHA256哈希，取前16个字符作为短标识符
         name_hash = hashlib.sha256(original_name.encode('utf-8')).hexdigest()[:16]
-        # 保留原始名称的前50个字符，加上哈希值
-        truncated_name = original_name[:50] + "_" + name_hash
+        # 保留原始名称的后50个字符，加上哈希值
+        truncated_name = original_name[-50:] + "_" + name_hash
         logger.warning(f"文件名过长，已截断: {original_name[:100]}... -> {truncated_name}")
     else:
         truncated_name = original_name

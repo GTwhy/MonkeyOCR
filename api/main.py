@@ -6,6 +6,7 @@ MonkeyOCR FastAPI Application
 import os
 import io
 import tempfile
+import hashlib
 from typing import Optional, List
 from pathlib import Path
 import asyncio
@@ -39,6 +40,46 @@ class ParseResponse(BaseModel):
     output_dir: Optional[str] = None
     files: Optional[List[str]] = None
     download_url: Optional[str] = None
+
+def create_safe_zip_filename(original_name: str, suffix: str, timestamp: int, unique_suffix: str) -> str:
+    """
+    创建安全的ZIP文件名，处理过长的原始文件名。
+
+    Args:
+        original_name: 原始文件名（不含扩展名）
+        suffix: 文件后缀（如 "_parsed" 或 "_split"）
+        timestamp: 时间戳
+        unique_suffix: 唯一后缀
+
+    Returns:
+        安全的ZIP文件名
+    """
+    # 文件系统通常限制文件名长度为255个字符
+    # 我们预留一些空间给时间戳和后缀，所以限制原始名称为150个字符
+    max_original_length = 150
+
+    # 如果原始名称太长，使用哈希值缩短它
+    if len(original_name) > max_original_length:
+        # 使用SHA256哈希，取前16个字符作为短标识符
+        name_hash = hashlib.sha256(original_name.encode('utf-8')).hexdigest()[:16]
+        # 保留原始名称的前50个字符，加上哈希值
+        truncated_name = original_name[:50] + "_" + name_hash
+        logger.warning(f"文件名过长，已截断: {original_name[:100]}... -> {truncated_name}")
+    else:
+        truncated_name = original_name
+
+    # 生成最终的ZIP文件名
+    zip_filename = f"{truncated_name}{suffix}_{timestamp}_{unique_suffix}.zip"
+
+    # 最后的保险措施：如果文件名仍然太长，强制截断
+    max_total_length = 200  # 保守的长度限制
+    if len(zip_filename) > max_total_length:
+        # 使用完整的哈希值作为文件名
+        full_hash = hashlib.sha256(f"{original_name}{suffix}{timestamp}".encode('utf-8')).hexdigest()[:32]
+        zip_filename = f"{full_hash}_{timestamp}_{unique_suffix}.zip"
+        logger.warning(f"最终文件名仍过长，使用哈希值: {zip_filename}")
+
+    return zip_filename
 
 # Global model instance and lock
 monkey_ocr_model = None
@@ -630,7 +671,7 @@ async def parse_document_internal(file: UploadFile, split_pages: bool = False, c
             # Create download URL with original filename and timestamp
             suffix = "_split" if split_pages else "_parsed"
             timestamp = int(time.time() * 1000)  # Use milliseconds for better uniqueness
-            zip_filename = f"{original_name}{suffix}_{timestamp}_{unique_suffix}.zip"
+            zip_filename = create_safe_zip_filename(original_name, suffix, timestamp, unique_suffix)
             zip_path = os.path.join(temp_dir, zip_filename)
             
             # Create ZIP file asynchronously
@@ -841,7 +882,7 @@ async def parse_document_download_internal(file: UploadFile, split_pages: bool =
             # Create ZIP file
             suffix = "_split" if split_pages else "_parsed"
             timestamp = int(time.time() * 1000)  # Use milliseconds for better uniqueness
-            zip_filename = f"{original_name}{suffix}_{timestamp}_{unique_suffix}.zip"
+            zip_filename = create_safe_zip_filename(original_name, suffix, timestamp, unique_suffix)
             zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
             
             # Create ZIP file asynchronously
